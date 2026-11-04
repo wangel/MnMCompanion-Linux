@@ -1,0 +1,60 @@
+name: Linux preview
+
+# Builds only the Linux Companion and publishes it as a prerelease on this fork, for people to try before the port is merged upstream.
+# It runs from tags like linux-v0.4.5-preview.1 (release.yml only answers v1.2.3 tags, so the two never both run):
+#     git tag linux-v0.4.5-preview.1 && git push origin linux-v0.4.5-preview.1
+on:
+  push:
+    tags: ['linux-v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-preview-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: The tag must start with the version in the Linux project
+        id: version
+        run: |
+          project=src/MnMCompanion.Desktop/MnMCompanion.Desktop.csproj
+          version=$(grep -oPm1 '(?<=<Version>)[^<]+' "$project")
+          case "$GITHUB_REF_NAME" in
+            "linux-v$version"|"linux-v$version"-*) ;;
+            *) echo "The tag is $GITHUB_REF_NAME but $project's <Version> is $version." >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: dotnet test MnMCompanion.sln --nologo -v q -c Release
+
+      - name: Publish the single-file program
+        run: scripts/build-linux.sh dist
+
+      - name: Pack it with its checksum
+        run: |
+          tar -czf MnMCompanion-linux-x64.tar.gz -C dist MnMCompanion
+          sha256sum MnMCompanion-linux-x64.tar.gz > MnMCompanion-linux-x64.tar.gz.sha256
+          ls -l MnMCompanion-linux-x64.tar.gz
+
+      - name: Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="A preview of Companion $VERSION for Linux, built from the port that is waiting to be merged into ExploreTheFloor/MnMCompanion. It has had little testing so far, so expect rough edges.
+
+          Download **MnMCompanion-linux-x64.tar.gz**, unpack it and run \`./MnMCompanion\`; nothing needs installing except, for the Map page, WebKitGTK (webkit2gtk-4.1). \`sha256sum -c MnMCompanion-linux-x64.tar.gz.sha256\` checks the download.
+
+          The app's update notice follows the official releases, which don't have a Linux build yet; check back here for newer previews."
+          gh release create "$GITHUB_REF_NAME" MnMCompanion-linux-x64.tar.gz MnMCompanion-linux-x64.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --prerelease --title "MnMCompanion-Linux $VERSION (preview)" --notes "$notes"
